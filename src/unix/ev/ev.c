@@ -235,7 +235,7 @@ EV_CPP(extern "C" {)
 #endif
 
 #ifndef EV_USE_CLOCK_SYSCALL
-# if __linux && __GLIBC__ >= 2
+# if __linux && defined (__GLIBC__) && __GLIBC__ >= 2
 #  define EV_USE_CLOCK_SYSCALL EV_FEATURE_OS
 # else
 #  define EV_USE_CLOCK_SYSCALL 0
@@ -275,7 +275,7 @@ EV_CPP(extern "C" {)
 #endif
 
 #ifndef EV_USE_EPOLL
-# if __linux && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 4))
+# if __linux && defined (__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 4))
 #  define EV_USE_EPOLL EV_FEATURE_BACKENDS
 # else
 #  define EV_USE_EPOLL 0
@@ -291,7 +291,7 @@ EV_CPP(extern "C" {)
 #endif
 
 #ifndef EV_USE_INOTIFY
-# if __linux && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 4))
+# if __linux && defined (__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 4))
 #  define EV_USE_INOTIFY EV_FEATURE_OS
 # else
 #  define EV_USE_INOTIFY 0
@@ -307,7 +307,7 @@ EV_CPP(extern "C" {)
 #endif
 
 #ifndef EV_USE_EVENTFD
-# if __linux && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 7))
+# if __linux && defined (__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 7))
 #  define EV_USE_EVENTFD EV_FEATURE_OS
 # else
 #  define EV_USE_EVENTFD 0
@@ -315,7 +315,7 @@ EV_CPP(extern "C" {)
 #endif
 
 #ifndef EV_USE_SIGNALFD
-# if __linux && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 7))
+# if __linux && defined (__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 7))
 #  define EV_USE_SIGNALFD EV_FEATURE_OS
 # else
 #  define EV_USE_SIGNALFD 0

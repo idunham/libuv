@@ -35,12 +35,15 @@
 #include <fcntl.h>
 #include <time.h>
 
-#define HAVE_IFADDRS_H 1
-#ifdef __UCLIBC__
-# if __UCLIBC_MAJOR__ < 0 || __UCLIBC_MINOR__ < 9 || __UCLIBC_SUBLEVEL__ < 32
-#  undef HAVE_IFADDRS_H
+#ifdef __GLIBC__
+# define HAVE_IFADDRS_H 1
+# ifdef __UCLIBC__
+#  if __UCLIBC_MAJOR__ < 0 || __UCLIBC_MINOR__ < 9 || __UCLIBC_SUBLEVEL__ < 32
+#   undef HAVE_IFADDRS_H
+#  endif
 # endif
 #endif
+
 #ifdef HAVE_IFADDRS_H
 # include <ifaddrs.h>
 #endif

@@ -26,6 +26,9 @@
 
 #include "uv.h"
 #include "internal.h"
+#include "handle-inl.h"
+#include "stream-inl.h"
+#include "req-inl.h"
 
 
 #define UNICODE_REPLACEMENT_CHARACTER (0xfffd)
@@ -86,55 +89,70 @@ void uv_console_init() {
 
 
 int uv_tty_init(uv_loop_t* loop, uv_tty_t* tty, uv_file fd, int readable) {
-  HANDLE win_handle;
-  CONSOLE_SCREEN_BUFFER_INFO info;
+  HANDLE handle = INVALID_HANDLE_VALUE;
+  DWORD original_console_mode = 0;
+  CONSOLE_SCREEN_BUFFER_INFO screen_buffer_info;
 
-  loop->counters.tty_init++;
-
-  win_handle = (HANDLE) _get_osfhandle(fd);
-  if (win_handle == INVALID_HANDLE_VALUE) {
-    uv__set_sys_error(loop, ERROR_INVALID_HANDLE);
+  handle = (HANDLE) _get_osfhandle(fd);
+  if (handle == INVALID_HANDLE_VALUE) {
+    uv__set_artificial_error(loop, UV_EBADF);
     return -1;
   }
 
-  if (!GetConsoleMode(win_handle, &tty->original_console_mode)) {
-    uv__set_sys_error(loop, GetLastError());
-    return -1;
-  }
+  if (readable) {
+     /* Try to obtain the original console mode fromt he input handle. */
+    if (!GetConsoleMode(handle, &original_console_mode)) {
+      uv__set_sys_error(loop, GetLastError());
+      return -1;
+    }
 
-  /* Initialize virtual window size; if it fails, assume that this is stdin. */
-  if (GetConsoleScreenBufferInfo(win_handle, &info)) {
+  } else {
+    /* Obtain the screen buffer info with the output handle. */
+    if (!GetConsoleScreenBufferInfo(handle, &screen_buffer_info)) {
+      uv__set_sys_error(loop, GetLastError());
+      return -1;
+    }
+
+    /* Update the virtual window. We must hold the tty_output_lock because the */
+    /* virtual window state is shared between all uv_tty handles. */
     EnterCriticalSection(&uv_tty_output_lock);
-    uv_tty_update_virtual_window(&info);
+    uv_tty_update_virtual_window(&screen_buffer_info);
     LeaveCriticalSection(&uv_tty_output_lock);
   }
 
-  uv_stream_init(loop, (uv_stream_t*) tty);
+
+  uv_stream_init(loop, (uv_stream_t*) tty, UV_TTY);
   uv_connection_init((uv_stream_t*) tty);
 
-  tty->type = UV_TTY;
-  tty->handle = win_handle;
-  tty->read_line_handle = NULL;
-  tty->read_line_buffer = uv_null_buf_;
-  tty->read_raw_wait = NULL;
+  tty->handle = handle;
   tty->reqs_pending = 0;
   tty->flags |= UV_HANDLE_BOUND;
 
-  /* Init keycode-to-vt100 mapper state. */
-  tty->last_key_len = 0;
-  tty->last_key_offset = 0;
-  tty->last_utf16_high_surrogate = 0;
-  memset(&tty->last_input_record, 0, sizeof tty->last_input_record);
+  if (readable) {
+    /* Initialize TTY input specific fields. */
+    tty->original_console_mode = original_console_mode;
+    tty->flags |= UV_HANDLE_TTY_READABLE;
+    tty->read_line_handle = NULL;
+    tty->read_line_buffer = uv_null_buf_;
+    tty->read_raw_wait = NULL;
 
-  /* Init utf8-to-utf16 conversion state. */
-  tty->utf8_bytes_left = 0;
-  tty->utf8_codepoint = 0;
+    /* Init keycode-to-vt100 mapper state. */
+    tty->last_key_len = 0;
+    tty->last_key_offset = 0;
+    tty->last_utf16_high_surrogate = 0;
+    memset(&tty->last_input_record, 0, sizeof tty->last_input_record);
+  } else {
+    /* TTY output specific fields. */
+    /* Init utf8-to-utf16 conversion state. */
+    tty->utf8_bytes_left = 0;
+    tty->utf8_codepoint = 0;
 
-  /* Initialize eol conversion state */
-  tty->previous_eol = 0;
+    /* Initialize eol conversion state */
+    tty->previous_eol = 0;
 
-  /* Init ANSI parser state. */
-  tty->ansi_parser_state = ANSI_NORMAL;
+    /* Init ANSI parser state. */
+    tty->ansi_parser_state = ANSI_NORMAL;
+  }
 
   return 0;
 }
@@ -145,6 +163,11 @@ int uv_tty_set_mode(uv_tty_t* tty, int mode) {
   unsigned char was_reading;
   uv_alloc_cb alloc_cb;
   uv_read_cb read_cb;
+
+  if (!(tty->flags & UV_HANDLE_TTY_READABLE)) {
+    uv__set_artificial_error(tty->loop, UV_EINVAL);
+    return -1;
+  }
 
   if (!!mode == !!(tty->flags & UV_HANDLE_TTY_RAW)) {
     return 0;
@@ -442,6 +465,7 @@ void uv_process_tty_read_raw_req(uv_loop_t* loop, uv_tty_t* handle,
   off_t buf_used;
 
   assert(handle->type == UV_TTY);
+  assert(handle->flags & UV_HANDLE_TTY_READABLE);
   handle->flags &= ~UV_HANDLE_READ_PENDING;
 
   if (!(handle->flags & UV_HANDLE_READING) ||
@@ -681,6 +705,7 @@ void uv_process_tty_read_line_req(uv_loop_t* loop, uv_tty_t* handle,
   uv_buf_t buf;
 
   assert(handle->type == UV_TTY);
+  assert(handle->flags & UV_HANDLE_TTY_READABLE);
 
   buf = handle->read_line_buffer;
 
@@ -690,7 +715,7 @@ void uv_process_tty_read_line_req(uv_loop_t* loop, uv_tty_t* handle,
   if (!REQ_SUCCESS(req)) {
     /* Read was not successful */
     if ((handle->flags & UV_HANDLE_READING) &&
-        !(handle->flags & UV_HANDLE_TTY_RAW)) {
+        handle->read_line_handle != NULL) {
       /* Real error */
       handle->flags &= ~UV_HANDLE_READING;
       DECREASE_ACTIVE_COUNT(loop, handle);
@@ -724,6 +749,8 @@ void uv_process_tty_read_line_req(uv_loop_t* loop, uv_tty_t* handle,
 
 void uv_process_tty_read_req(uv_loop_t* loop, uv_tty_t* handle,
     uv_req_t* req) {
+  assert(handle->type == UV_TTY);
+  assert(handle->flags & UV_HANDLE_TTY_READABLE);
 
   /* If the read_line_buffer member is zero, it must have been an raw read. */
   /* Otherwise it was a line-buffered read. */
@@ -739,6 +766,11 @@ void uv_process_tty_read_req(uv_loop_t* loop, uv_tty_t* handle,
 int uv_tty_read_start(uv_tty_t* handle, uv_alloc_cb alloc_cb,
     uv_read_cb read_cb) {
   uv_loop_t* loop = handle->loop;
+
+  if (!(handle->flags & UV_HANDLE_TTY_READABLE)) {
+    uv__set_artificial_error(handle->loop, UV_EINVAL);
+    return -1;
+  }
 
   handle->flags |= UV_HANDLE_READING;
   INCREASE_ACTIVE_COUNT(loop, handle);
@@ -767,6 +799,10 @@ int uv_tty_read_start(uv_tty_t* handle, uv_alloc_cb alloc_cb,
 
 int uv_tty_read_stop(uv_tty_t* handle) {
   uv_loop_t* loop = handle->loop;
+  if (!(handle->flags & UV_HANDLE_TTY_READABLE)) {
+    uv__set_artificial_error(handle->loop, UV_EINVAL);
+    return -1;
+  }
 
   if (handle->flags & UV_HANDLE_READING) {
     handle->flags &= ~UV_HANDLE_READING;
@@ -1676,6 +1712,11 @@ int uv_tty_write(uv_loop_t* loop, uv_write_t* req, uv_tty_t* handle,
     uv_buf_t bufs[], int bufcnt, uv_write_cb cb) {
   DWORD error;
 
+  if (handle->flags & UV_HANDLE_TTY_READABLE) {
+    uv__set_artificial_error(handle->loop, UV_EINVAL);
+    return -1;
+  }
+
   if ((handle->flags & UV_HANDLE_SHUTTING) ||
       (handle->flags & UV_HANDLE_CLOSING)) {
     uv__set_sys_error(loop, WSAESHUTDOWN);
@@ -1727,10 +1768,15 @@ void uv_process_tty_write_req(uv_loop_t* loop, uv_tty_t* handle,
 
 
 void uv_tty_close(uv_tty_t* handle) {
-  handle->flags |= UV_HANDLE_SHUTTING;
-
-  uv_tty_read_stop(handle);
   CloseHandle(handle->handle);
+
+  if (handle->flags & UV_HANDLE_TTY_READABLE) {
+    /* Readable TTY handle */
+    uv_tty_read_stop(handle);
+  } else {
+    /* Writable TTY handle */
+    handle->flags |= UV_HANDLE_SHUTTING;
+  }
 
   uv__handle_start(handle);
 
@@ -1741,7 +1787,7 @@ void uv_tty_close(uv_tty_t* handle) {
 
 
 void uv_tty_endgame(uv_loop_t* loop, uv_tty_t* handle) {
-  if ((handle->flags && UV_HANDLE_CONNECTION) &&
+  if (!(handle->flags && UV_HANDLE_TTY_READABLE) &&
       handle->shutdown_req != NULL &&
       handle->write_reqs_pending == 0) {
     UNREGISTER_HANDLE_REQ(loop, handle, handle->shutdown_req);
@@ -1749,7 +1795,7 @@ void uv_tty_endgame(uv_loop_t* loop, uv_tty_t* handle) {
     /* TTY shutdown is really just a no-op */
     if (handle->shutdown_req->cb) {
       if (handle->flags & UV_HANDLE_CLOSING) {
-        uv__set_sys_error(loop, WSAEINTR);
+        uv__set_artificial_error(loop, UV_ECANCELED);
         handle->shutdown_req->cb(handle->shutdown_req, -1);
       } else {
         handle->shutdown_req->cb(handle->shutdown_req, 0);
@@ -1766,19 +1812,17 @@ void uv_tty_endgame(uv_loop_t* loop, uv_tty_t* handle) {
       handle->reqs_pending == 0) {
     /* The console handle duplicate used for line reading should be destroyed */
     /* by uv_tty_read_stop. */
-    assert(handle->read_line_handle == NULL);
+    assert(!(handle->flags & UV_HANDLE_TTY_READABLE) ||
+           handle->read_line_handle == NULL);
 
     /* The wait handle used for raw reading should be unregistered when the */
     /* wait callback runs. */
-    assert(handle->read_raw_wait == NULL);
+    assert(!(handle->flags & UV_HANDLE_TTY_READABLE) ||
+           handle->read_raw_wait == NULL);
 
     assert(!(handle->flags & UV_HANDLE_CLOSED));
-    handle->flags |= UV_HANDLE_CLOSED;
     uv__handle_stop(handle);
-
-    if (handle->close_cb) {
-      handle->close_cb((uv_handle_t*)handle);
-    }
+    uv__handle_close(handle);
   }
 }
 

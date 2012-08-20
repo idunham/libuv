@@ -22,6 +22,7 @@
 
 #include "uv.h"
 #include "eio.h"
+#include "internal.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -61,13 +62,8 @@ static void uv_eio_done_poll_notifier_cb(uv_async_t* watcher, int revents) {
  */
 static void uv_eio_want_poll(eio_channel *channel) {
   /* Signal the main thread that eio_poll need to be processed. */
-
-  /*
-   * TODO need to select the correct uv_loop_t and async_send to
-   * uv_eio_want_poll_notifier.
-   */
-
-  uv_async_send(&((uv_loop_t *)channel->data)->uv_eio_want_poll_notifier);
+  uv_loop_t* loop = channel->data;
+  uv_async_send(&loop->uv_eio_want_poll_notifier);
 }
 
 
@@ -76,7 +72,8 @@ static void uv_eio_done_poll(eio_channel *channel) {
    * Signal the main thread that we should stop calling eio_poll().
    * from the idle watcher.
    */
-  uv_async_send(&((uv_loop_t *)channel->data)->uv_eio_done_poll_notifier);
+  uv_loop_t* loop = channel->data;
+  uv_async_send(&loop->uv_eio_done_poll_notifier);
 }
 
 
@@ -86,18 +83,25 @@ static void uv__eio_init(void) {
 
 
 void uv_eio_init(uv_loop_t* loop) {
-  if (loop->counters.eio_init) return;
-  loop->counters.eio_init = 1;
+  if (loop->flags & UV_LOOP_EIO_INITIALIZED) return;
+  loop->flags |= UV_LOOP_EIO_INITIALIZED;
 
   uv_idle_init(loop, &loop->uv_eio_poller);
   uv_idle_start(&loop->uv_eio_poller, uv_eio_do_poll);
+  loop->uv_eio_poller.flags |= UV__HANDLE_INTERNAL;
 
   loop->uv_eio_want_poll_notifier.data = loop;
-  uv_async_init(loop, &loop->uv_eio_want_poll_notifier,
-      uv_eio_want_poll_notifier_cb);
+  uv_async_init(loop,
+                &loop->uv_eio_want_poll_notifier,
+                uv_eio_want_poll_notifier_cb);
+  loop->uv_eio_want_poll_notifier.flags |= UV__HANDLE_INTERNAL;
+  uv__handle_unref(&loop->uv_eio_want_poll_notifier);
 
-  uv_async_init(loop, &loop->uv_eio_done_poll_notifier,
-      uv_eio_done_poll_notifier_cb);
+  uv_async_init(loop,
+                &loop->uv_eio_done_poll_notifier,
+                uv_eio_done_poll_notifier_cb);
+  loop->uv_eio_done_poll_notifier.flags |= UV__HANDLE_INTERNAL;
+  uv__handle_unref(&loop->uv_eio_done_poll_notifier);
 
   uv_once(&uv__eio_init_once_guard, uv__eio_init);
 }

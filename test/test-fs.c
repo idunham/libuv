@@ -1224,10 +1224,10 @@ TEST_IMPL(fs_symlink) {
        * We just pass the test and bail out early if we get ENOTSUP.
        */
       return 0;
-    } else if (uv_last_error(loop).sys_errno_ == ERROR_PRIVILEGE_NOT_HELD) {
+    } else if (uv_last_error(loop).code == UV_EPERM) {
       /*
        * Creating a symlink is only allowed when running elevated.
-       * We pass the test and bail out early if we get ERROR_PRIVILEGE_NOT_HELD.
+       * We pass the test and bail out early if we get UV_EPERM.
        */
       return 0;
     }
@@ -1305,7 +1305,6 @@ TEST_IMPL(fs_symlink) {
 TEST_IMPL(fs_symlink_dir) {
   uv_fs_t req;
   int r;
-  char src_path_buf[PATHMAX];
   char* test_dir;
 
   /* set-up */
@@ -1320,10 +1319,13 @@ TEST_IMPL(fs_symlink_dir) {
   uv_fs_req_cleanup(&req);
 
 #ifdef _WIN32
-  strcpy(src_path_buf, "\\\\?\\");
-  uv_cwd(src_path_buf + 4, sizeof(src_path_buf)/sizeof(src_path_buf[0]));
-  strcat(src_path_buf, "\\test_dir\\");
-  test_dir = src_path_buf;
+  {
+    static char src_path_buf[PATHMAX];
+    strcpy(src_path_buf, "\\\\?\\");
+    uv_cwd(src_path_buf + 4, sizeof(src_path_buf));
+    strcat(src_path_buf, "\\test_dir\\");
+    test_dir = src_path_buf;
+  }
 #else
   test_dir = "test_dir";
 #endif
@@ -1342,7 +1344,11 @@ TEST_IMPL(fs_symlink_dir) {
   r = uv_fs_lstat(loop, &req, "test_dir_symlink", NULL);
   ASSERT(r == 0);
   ASSERT(((struct stat*)req.ptr)->st_mode & S_IFLNK);
-  ASSERT(((struct stat*)req.ptr)->st_size == 22);
+#ifdef _WIN32
+  ASSERT(((struct stat*)req.ptr)->st_size == strlen(test_dir + 4));
+#else
+  ASSERT(((struct stat*)req.ptr)->st_size == strlen(test_dir));
+#endif
   uv_fs_req_cleanup(&req);
 
   r = uv_fs_readlink(loop, &req, "test_dir_symlink", NULL);

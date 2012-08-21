@@ -4,6 +4,14 @@
 #include <linux/version.h>
 #include <features.h>
 
+/* 
+ * Handle non-gnu libc versions with nothing in features.h 
+ * We have no idea what they're compatible with, so always fail.
+ */
+#ifndef __GLIBC_PREREQ
+# define __GLIBC_PREREQ(x,y) 0
+#endif
+
 /* Define to 1 if you have the <dlfcn.h> header file. */
 #define HAVE_DLFCN_H 1
 

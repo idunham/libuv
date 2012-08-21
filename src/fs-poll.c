@@ -194,7 +194,7 @@ static int statbuf_eq(const uv_statbuf_t* a, const uv_statbuf_t* b) {
 
   /* Jump through a few hoops to get sub-second granularity on Linux. */
 # if __linux__
-#  if __USE_MISC /* _BSD_SOURCE || _SVID_SOURCE */
+#  if defined(_BSD_SOURCE) || defined(_SVID_SOURCE) || defined(_GNU_SOURCE)
   if (a->st_ctim.tv_nsec != b->st_ctim.tv_nsec) return 0;
   if (a->st_mtim.tv_nsec != b->st_mtim.tv_nsec) return 0;
 #  else
